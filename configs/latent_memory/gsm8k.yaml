@@ -1,0 +1,219 @@
+model: 
+  # base llm
+  model_name: Qwen/Qwen2.5-1.5B-Instruct
+  load_model_path: null
+  
+  # max prompt/inference augmentation num
+  max_prompt_aug_num: 1  # single turn
+  max_inference_aug_num: 5
+
+  # weaver configs
+  weaver:
+    model_name: Qwen/Qwen2.5-1.5B-Instruct
+    prompt_latents_len: 8
+    inference_latents_len: 8
+    # NeuroWeave v2.2: Hyper-LoRA Weaver (A1 config; set true when A2 is implemented)
+    use_hyper_lora: true
+    hyper_lora_rank: 16
+    # NeuroWeave v2.2: G-Mem (GRU memory; set true to enable)
+    use_gru_memory: false
+    gru_hidden_size: 0   # 0 = use weaver hidden size
+    bptt_trigger_steps: 4
+    # NeuroWeave Phase 1: set use_shared_kv true to use parasitic weaver (no backbone, cross-attn only)
+    use_shared_kv: false
+    cross_attn_num_heads: 8
+    cross_attn_dropout: 0.0
+    # Phase 2: entropy trigger and latent KV buffer
+    use_entropy_trigger: false
+    entropy_trigger_threshold: 2.0
+    log_entropy_during_generation: false
+    use_latent_kv_buffer: false
+    latent_kv_buffer_size: 16
+    lora_config:
+      r: 16
+      lora_alpha: 32
+      target_modules: ["q_proj", "v_proj"]
+      lora_dropout: 0.1
+      bias: "none"
+      task_type: "CAUSAL_LM"
+
+  # trigger configs
+  trigger:
+    model_name: Qwen/Qwen2.5-1.5B-Instruct
+    active: False
+    # NeuroWeave v2.2: Sparse Varentropy Trigger (2.3)
+    use_sparse_varentropy_trigger: false
+    varentropy_period_k: 1
+    varentropy_threshold_tau: 2.0
+    varentropy_tau_trainable: false
+    varentropy_top_k: 50
+    # punct_token_ids: null  # null = auto from tokenizer for . \n , ? !
+
+    lora_config:
+      r: 16
+      lora_alpha: 32
+      target_modules: ["q_proj", "v_proj"]
+      lora_dropout: 0.1
+      bias: "none"
+      task_type: "CAUSAL_LM"
+      
+# dataset configs
+dataset: 
+  name: gsm8k
+  mode: sft  # options: ["sft", "grpo"], should manually keep align with the training method in `run` configs
+  seed: 42   # for reproducible train/val split (train_test_split)
+  sft:
+    val_ratio: 0.1
+  grpo: 
+    val_ratio: 0.1
+
+# training/evaluation configs
+run: 
+
+  seed: 42
+  
+  # route
+  mode: train
+  train_weaver: True
+  train_weaver_method: sft    # sft or grpo
+  train_trigger: False
+  train_trigger_method: grpo  # grpo only
+
+  # processor training configs
+  weaver:
+    
+    # sft configs
+    sft:
+      # epochs and batchsize
+      num_train_epochs: 2
+      per_device_train_batch_size: 4
+      per_device_eval_batch_size: 4
+      gradient_accumulation_steps: 1
+      
+      # optimizer configs
+      optim: adamw_torch
+      lr_scheduler_type: cosine
+      warmup_ratio: 0.1
+      learning_rate: 1e-5
+      
+      # duration
+      logging_strategy: steps
+      logging_steps: 1
+      eval_strategy: epoch
+      eval_steps: 100
+      save_strategy: epoch
+      save_steps: 100
+ 
+      assistant_only_loss: False   # used only in conversational dataset
+      max_length: 1024  # max sequence length
+      remove_unused_columns: False
+      dataloader_drop_last: true   # keep same num steps per rank, avoid NCCL timeout
+      load_best_model_at_end: True
+      bf16: True
+      report_to:  
+        - tensorboard
+      
+    # grpo configs
+    grpo:
+      num_train_epochs: 1
+      per_device_train_batch_size: 8
+      per_device_eval_batch_size: 8
+      num_generations: 8   
+      num_iterations: 1
+      gradient_accumulation_steps: 1
+      beta: 0.0
+      loss_type: grpo
+      # Phase 3: R = R_outcome + alpha * R_efficiency - beta * R_redundancy (set 0 to disable)
+      memory_reward_alpha: 0.0
+      memory_reward_beta: 0.0
+      redundancy_cosine_threshold: 0.9
+      # Length penalty: subtract when wrong AND hit max_completion_length (e.g. 0.05)
+      length_penalty_coef: 0.0
+
+      max_prompt_length: 1024
+      max_completion_length: 512
+      temperature: 1.0
+      
+      # optimizer configs
+      optim: adamw_torch
+      lr_scheduler_type: cosine
+      warmup_ratio: 0.1
+      learning_rate: 1e-5
+      
+      # duration
+      logging_strategy: steps
+      logging_steps: 1
+      eval_strategy: epoch
+      eval_steps: 100
+      save_strategy: epoch
+      save_steps: 100
+
+      remove_unused_columns: False
+      load_best_model_at_end: True
+      bf16: True
+      report_to:  
+        - tensorboard
+
+  # trigger training configs
+  trigger:
+
+    grpo:
+      num_train_epochs: 1
+      per_device_train_batch_size: 8
+      per_device_eval_batch_size: 8
+      num_generations: 8
+      num_iterations: 1
+      gradient_accumulation_steps: 1
+      beta: 0.0
+      loss_type: bnpo
+
+      max_prompt_length: 1024
+      max_completion_length: 512
+      temperature: 1.0
+
+      # NeuroWeave v2.2: Gated R-GRPO (2.4)
+      gated_r_grpo: false
+      length_penalty_target: 128.0
+      length_penalty_tau: 32.0
+      alpha_density: 0.0
+      beta_max: 0.1
+      acc_target: 0.5
+      k_schedule: 10.0
+      acc_ema_mu: 0.9
+      gamma_rep: 0.0
+      ngram_rep: 3
+
+      # optimizer configs
+      optim: adamw_torch
+      learning_rate: 1e-5
+      lr_scheduler_type: cosine
+      warmup_ratio: 0.1
+      
+      # duration
+      logging_strategy: steps
+      logging_steps: 1
+      eval_strategy: epoch
+      eval_steps: 100
+      save_strategy: epoch
+      save_steps: 100
+
+      remove_unused_columns: False
+      load_best_model_at_end: True
+      bf16: True
+      report_to:  
+        - tensorboard
+  
+  # interaction config for evaluation
+  interaction:
+    max_turns: 1
+    max_start_length: 1024     # Maximum length of the initial prompt.
+    max_prompt_length: 4096    # Maximum prompt length during multi-turn interactions (includes all conversation history across turns).
+    max_response_length: 1024
+    max_obs_length: 512
+    do_sample: False
+    temperature: 1.0
+    batch_size: 8
+    # Phase 4 MATTS: test-time N-way memory sampling + fusion (1 = disabled)
+    matts_n_samples: 1
+    matts_merge: vote   # vote | verifier | first
+    matts_dataset_name: gsm8k
